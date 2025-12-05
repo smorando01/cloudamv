@@ -109,6 +109,11 @@
           }
         }
 
+        const employeeInitial = selectedEmployee && selectedEmployee.nombre
+          ? selectedEmployee.nombre[0]
+          : "?";
+        const employeeName = selectedEmployee ? selectedEmployee.nombre : "";
+
         return (
           <div className="min-h-screen text-brand-dark">
             <div className="mx-auto max-w-5xl px-4 py-10">
@@ -124,7 +129,7 @@
                 </div>
                 <div className="flex items-center gap-3 rounded-2xl bg-white/90 px-4 py-3 shadow">
                   <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-brand-primary to-brand-accent text-white font-semibold">
-                    {selectedEmployee?.nombre?.[0] || "?"}
+                    {employeeInitial}
                   </div>
                   <div>
                     <p className="text-sm font-semibold">Empleado</p>
@@ -207,7 +212,7 @@
                         )}
                         {records.map((row) => (
                           <tr key={row.id}>
-                            <td className="px-4 py-3">{row.empleado || selectedEmployee?.nombre}</td>
+                            <td className="px-4 py-3">{row.empleado || employeeName}</td>
                             <td className="px-4 py-3 font-semibold text-brand-primary">{row.tipo}</td>
                             <td className="px-4 py-3 text-slate-600">{formatDateTime(row.fecha_hora)}</td>
                           </tr>
