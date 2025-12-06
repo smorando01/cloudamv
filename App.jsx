@@ -203,6 +203,8 @@ function AdminDashboard({
   const [manualPunch, setManualPunch] = useState(initialManual);
   const [editPunch, setEditPunch] = useState(null);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState(null);
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
 
   const employeeOptions = useMemo(() => {
     if (!stats || !stats.empleados) return [];
@@ -221,9 +223,9 @@ function AdminDashboard({
 
   useEffect(() => {
     if (selectedEmployeeId) {
-      onReloadLogs(selectedEmployeeId);
+      onReloadLogs({ employeeId: selectedEmployeeId, startDate, endDate });
     }
-  }, [selectedEmployeeId, onReloadLogs]);
+  }, [selectedEmployeeId, startDate, endDate, onReloadLogs]);
 
   async function handleCreateEmployee(e) {
     e.preventDefault();
@@ -236,7 +238,10 @@ function AdminDashboard({
   async function handleManualPunch(e) {
     e.preventDefault();
     const payload = { ...manualPunch, empleado_id: Number(manualPunch.empleado_id) };
-    const ok = await onManualPunch(payload, selectedEmployeeId || payload.empleado_id);
+    const ok = await onManualPunch(payload, selectedEmployeeId || payload.empleado_id, {
+      startDate,
+      endDate,
+    });
     if (ok) {
       setManualPunch(initialManual);
     }
@@ -245,7 +250,10 @@ function AdminDashboard({
   async function handleEditSubmit(e) {
     e.preventDefault();
     if (!editPunch) return;
-    const ok = await onEditPunch(editPunch, selectedEmployeeId || editPunch.empleado_id);
+    const ok = await onEditPunch(editPunch, selectedEmployeeId || editPunch.empleado_id, {
+      startDate,
+      endDate,
+    });
     if (ok) {
       setEditPunch(null);
     }
@@ -253,7 +261,17 @@ function AdminDashboard({
 
   async function handleDelete(row) {
     if (!window.confirm("¿Borrar fichaje?")) return;
-    await onDeletePunch(row.id, selectedEmployeeId || row.empleado_id);
+    await onDeletePunch(row.id, selectedEmployeeId || row.empleado_id, { startDate, endDate });
+  }
+
+  function handleExport() {
+    const targetEmployee = selectedEmployeeId || user.id;
+    const params = new URLSearchParams();
+    params.set("action", "export_csv");
+    params.set("empleado_id", targetEmployee);
+    if (startDate) params.set("fecha_inicio", startDate);
+    if (endDate) params.set("fecha_fin", endDate);
+    window.open(`${API}?${params.toString()}`, "_blank");
   }
 
   return (
@@ -432,6 +450,38 @@ function AdminDashboard({
         </div>
       )}
 
+      <div className="rounded-2xl border border-white/80 bg-white/95 p-4 shadow-xl backdrop-blur flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="flex flex-col text-sm">
+            <label className="text-xs font-semibold text-slate-600">Desde</label>
+            <input
+              type="date"
+              className="mt-1 rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-brand-primary focus:outline-none"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+            />
+          </div>
+          <div className="flex flex-col text-sm">
+            <label className="text-xs font-semibold text-slate-600">Hasta</label>
+            <input
+              type="date"
+              className="mt-1 rounded-lg border border-slate-200 px-3 py-2 text-sm focus:border-brand-primary focus:outline-none"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={handleExport}
+            className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-semibold text-white shadow hover:bg-brand-primary-dark"
+          >
+            Descargar Reporte CSV
+          </button>
+        </div>
+      </div>
+
       <LogsTable
         logs={logs}
         title="Historial"
@@ -509,12 +559,17 @@ export default function App() {
   }, []);
 
   const loadLogs = useCallback(
-    async (employeeId) => {
+    async (filters = {}) => {
       if (!user) return;
       setLoading(true);
       try {
-        const query = employeeId ? `${API}?empleado_id=${employeeId}` : API;
-        const res = await fetch(query);
+        const params = new URLSearchParams();
+        const employeeId = filters.employeeId || user.id;
+        if (employeeId) params.set("empleado_id", employeeId);
+        if (filters.startDate) params.set("fecha_inicio", filters.startDate);
+        if (filters.endDate) params.set("fecha_fin", filters.endDate);
+        const url = params.toString() ? `${API}?${params.toString()}` : API;
+        const res = await fetch(url);
         const data = await res.json();
         if (data.success) {
           setLogs(data.data || []);
@@ -546,7 +601,7 @@ export default function App() {
       setStats(null);
       return;
     }
-    loadLogs(user.id);
+    loadLogs({ employeeId: user.id });
     if (user.rol === "admin") {
       loadStats();
     }
@@ -582,7 +637,7 @@ export default function App() {
       const res = await apiFetch("POST", "", { tipo });
       if (res && res.success) {
         setMessage("Fichaje guardado");
-        await loadLogs(user.id);
+        await loadLogs({ employeeId: user.id });
         if (user.rol === "admin") {
           loadStats();
         }
@@ -615,13 +670,17 @@ export default function App() {
   );
 
   const handleManualPunch = useCallback(
-    async (payload, employeeId) => {
+    async (payload, employeeId, dateFilters = {}) => {
       setSaving(true);
       setMessage("");
       const res = await apiFetch("POST", "admin_punch", payload);
       if (res && res.success) {
         setMessage("Fichaje manual creado");
-        await loadLogs(employeeId || payload.empleado_id || user.id);
+        await loadLogs({
+          employeeId: employeeId || payload.empleado_id || user.id,
+          startDate: dateFilters.startDate,
+          endDate: dateFilters.endDate,
+        });
         await loadStats();
         setSaving(false);
         return true;
@@ -634,7 +693,7 @@ export default function App() {
   );
 
   const handleEditPunch = useCallback(
-    async (payload, employeeId) => {
+    async (payload, employeeId, dateFilters = {}) => {
       setSaving(true);
       setMessage("");
       const res = await apiFetch("POST", "edit_punch", {
@@ -644,7 +703,11 @@ export default function App() {
       });
       if (res && res.success) {
         setMessage("Fichaje actualizado");
-        await loadLogs(employeeId || payload.empleado_id || user.id);
+        await loadLogs({
+          employeeId: employeeId || payload.empleado_id || user.id,
+          startDate: dateFilters.startDate,
+          endDate: dateFilters.endDate,
+        });
         await loadStats();
         setSaving(false);
         return true;
@@ -657,13 +720,17 @@ export default function App() {
   );
 
   const handleDeletePunch = useCallback(
-    async (id, employeeId) => {
+    async (id, employeeId, dateFilters = {}) => {
       setSaving(true);
       setMessage("");
       const res = await apiFetch("POST", "delete_punch", { id });
       if (res && res.success) {
         setMessage("Fichaje borrado");
-        await loadLogs(employeeId || user.id);
+        await loadLogs({
+          employeeId: employeeId || user.id,
+          startDate: dateFilters.startDate,
+          endDate: dateFilters.endDate,
+        });
         await loadStats();
         setSaving(false);
         return true;

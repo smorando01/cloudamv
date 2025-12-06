@@ -303,6 +303,46 @@ if ($method === 'GET') {
             ]);
             break;
 
+        case 'export_csv':
+            // Exporta historial filtrado en CSV (solo admin)
+            requireLogin('admin');
+
+            $empleadoId = isset($_GET['empleado_id']) ? (int)$_GET['empleado_id'] : 0;
+            if (!$empleadoId) {
+                respond(['success' => false, 'error' => 'Empleado requerido'], 400);
+            }
+
+            $filters = [
+                'empleado_id' => $empleadoId,
+                'limit' => isset($_GET['limit']) ? max(1, min(1000, (int)$_GET['limit'])) : 500,
+                'start_date' => isset($_GET['fecha_inicio']) ? trim($_GET['fecha_inicio']) : '',
+                'end_date' => isset($_GET['fecha_fin']) ? trim($_GET['fecha_fin']) : '',
+            ];
+
+            $rows = fetchLogs($pdo, $filters);
+
+            $filename = 'reporte_fichajes_' . date('Ymd_His') . '.csv';
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="' . $filename . '"');
+
+            $output = fopen('php://output', 'w');
+            fprintf($output, chr(0xEF) . chr(0xBB) . chr(0xBF)); // BOM para compatibilidad Excel
+            fputcsv($output, ['ID Empleado', 'Cédula', 'Nombre', 'Tipo', 'Fecha', 'Hora']);
+
+            foreach ($rows as $row) {
+                $ts = strtotime($row['fecha_hora']);
+                fputcsv($output, [
+                    $row['empleado_id'],
+                    $row['cedula'],
+                    $row['empleado'],
+                    $row['tipo'],
+                    date('Y-m-d', $ts),
+                    date('H:i:s', $ts),
+                ]);
+            }
+            fclose($output);
+            exit;
+
         default:
             // Historial: del usuario o del empleado indicado por admin
             $user = requireLogin();
@@ -313,20 +353,18 @@ if ($method === 'GET') {
                 $empleadoId = (int)$_GET['empleado_id'];
             }
 
-            $sql = 'SELECT f.id, f.empleado_id, e.nombre AS empleado, f.tipo, f.fecha_hora
-                    FROM fichajes f
-                    JOIN empleados e ON e.id = f.empleado_id
-                    WHERE f.empleado_id = :empleado_id
-                    ORDER BY f.fecha_hora DESC, f.id DESC
-                    LIMIT :limit';
-            $stmt = $pdo->prepare($sql);
-            $stmt->bindValue(':empleado_id', $empleadoId, PDO::PARAM_INT);
-            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
-            $stmt->execute();
+            $filters = [
+                'empleado_id' => $empleadoId,
+                'limit' => $limit,
+                'start_date' => isset($_GET['fecha_inicio']) ? trim($_GET['fecha_inicio']) : '',
+                'end_date' => isset($_GET['fecha_fin']) ? trim($_GET['fecha_fin']) : '',
+            ];
+
+            $rows = fetchLogs($pdo, $filters);
 
             respond([
                 'success' => true,
-                'data' => $stmt->fetchAll(),
+                'data' => $rows,
             ]);
             break;
     }
@@ -447,4 +485,45 @@ function validatePunch(PDO $pdo, $empleadoId, $tipo)
     }
 
     return null;
+}
+
+function fetchLogs(PDO $pdo, array $filters)
+{
+    $limit = isset($filters['limit']) ? max(1, min(500, (int)$filters['limit'])) : 200;
+
+    $conditions = [];
+    $params = [];
+
+    if (!empty($filters['empleado_id'])) {
+        $conditions[] = 'f.empleado_id = :empleado_id';
+        $params[':empleado_id'] = (int)$filters['empleado_id'];
+    }
+
+    if (!empty($filters['start_date'])) {
+        $conditions[] = 'DATE(f.fecha_hora) >= :start_date';
+        $params[':start_date'] = $filters['start_date'];
+    }
+
+    if (!empty($filters['end_date'])) {
+        $conditions[] = 'DATE(f.fecha_hora) <= :end_date';
+        $params[':end_date'] = $filters['end_date'];
+    }
+
+    $where = $conditions ? 'WHERE ' . implode(' AND ', $conditions) : '';
+
+    $sql = 'SELECT f.id, f.empleado_id, e.cedula, e.nombre AS empleado, e.rol, f.tipo, f.fecha_hora
+            FROM fichajes f
+            JOIN empleados e ON e.id = f.empleado_id
+            ' . $where . '
+            ORDER BY f.fecha_hora DESC, f.id DESC
+            LIMIT :limit';
+
+    $stmt = $pdo->prepare($sql);
+    foreach ($params as $key => $value) {
+        $stmt->bindValue($key, $value, is_int($value) ? PDO::PARAM_INT : PDO::PARAM_STR);
+    }
+    $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+    $stmt->execute();
+
+    return $stmt->fetchAll();
 }
