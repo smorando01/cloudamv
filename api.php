@@ -62,6 +62,279 @@ try {
     exit;
 }
 
+$method = $_SERVER['REQUEST_METHOD'];
+$action = isset($_GET['action']) ? trim($_GET['action']) : '';
+
+// --- POST routes ---
+if ($method === 'POST') {
+    $input = getJsonInput();
+    if (isset($input['action']) && $action === '') {
+        $action = trim($input['action']);
+    }
+
+    switch ($action) {
+        case 'login':
+            // Inicia sesión del usuario y actualiza hash heredado si aplica
+            $cedula = isset($input['cedula']) ? trim($input['cedula']) : '';
+            $password = isset($input['password']) ? (string)$input['password'] : '';
+
+            if ($cedula === '' || $password === '') {
+                respond(['success' => false, 'error' => 'Cedula y password son requeridos'], 400);
+            }
+
+            $stmt = $pdo->prepare('SELECT id, nombre, cedula, password, rol FROM empleados WHERE cedula = :cedula LIMIT 1');
+            $stmt->execute([':cedula' => $cedula]);
+            $user = $stmt->fetch();
+            if (!$user) {
+                respond(['success' => false, 'error' => 'Usuario o contraseña inválidos'], 401);
+            }
+
+            $needsRehash = false;
+            if (!verifyPassword($password, $user['password'], $needsRehash)) {
+                respond(['success' => false, 'error' => 'Usuario o contraseña inválidos'], 401);
+            }
+
+            if ($needsRehash) {
+                $newHash = password_hash($password, PASSWORD_DEFAULT);
+                $pdo->prepare('UPDATE empleados SET password = :pwd WHERE id = :id')->execute([
+                    ':pwd' => $newHash,
+                    ':id' => $user['id'],
+                ]);
+                $user['password'] = $newHash;
+            }
+
+            $_SESSION['user'] = [
+                'id' => (int)$user['id'],
+                'nombre' => $user['nombre'],
+                'cedula' => $user['cedula'],
+                'rol' => $user['rol'],
+            ];
+
+            respond(['success' => true, 'user' => $_SESSION['user']]);
+            break;
+
+        case 'logout':
+            // Cierra la sesión actual
+            session_unset();
+            session_destroy();
+            respond(['success' => true]);
+            break;
+
+        case 'create_employee':
+            // Alta de empleado por administrador
+            requireLogin('admin');
+
+            $nombre = isset($input['nombre']) ? trim($input['nombre']) : '';
+            $cedula = isset($input['cedula']) ? trim($input['cedula']) : '';
+            $password = isset($input['password']) ? (string)$input['password'] : '';
+            $rol = isset($input['rol']) ? trim($input['rol']) : 'empleado';
+
+            if ($nombre === '' || $cedula === '' || $password === '') {
+                respond(['success' => false, 'error' => 'Nombre, cedula y password son requeridos'], 400);
+            }
+            if (!in_array($rol, ['admin', 'empleado'], true)) {
+                $rol = 'empleado';
+            }
+
+            $stmt = $pdo->prepare('SELECT id FROM empleados WHERE cedula = :cedula LIMIT 1');
+            $stmt->execute([':cedula' => $cedula]);
+            if ($stmt->fetch()) {
+                respond(['success' => false, 'error' => 'Cedula ya registrada'], 409);
+            }
+
+            $hash = password_hash($password, PASSWORD_DEFAULT);
+            $stmt = $pdo->prepare('INSERT INTO empleados (nombre, cedula, password, rol, turno_id) VALUES (:nombre, :cedula, :password, :rol, :turno_id)');
+            $stmt->execute([
+                ':nombre' => $nombre,
+                ':cedula' => $cedula,
+                ':password' => $hash,
+                ':rol' => $rol,
+                ':turno_id' => 1,
+            ]);
+
+            respond([
+                'success' => true,
+                'id' => (int)$pdo->lastInsertId(),
+                'nombre' => $nombre,
+                'cedula' => $cedula,
+                'rol' => $rol,
+            ], 201);
+            break;
+
+        case 'admin_punch':
+            // Crea fichaje manual por un administrador
+            requireLogin('admin');
+
+            $empleadoId = isset($input['empleado_id']) ? (int)$input['empleado_id'] : 0;
+            $tipo = isset($input['tipo']) ? trim($input['tipo']) : '';
+            $fechaHora = !empty($input['fecha_hora']) ? trim($input['fecha_hora']) : date('Y-m-d H:i:s');
+
+            if (!$empleadoId || !in_array($tipo, $validTypes, true)) {
+                respond(['success' => false, 'error' => 'Empleado y tipo son requeridos'], 400);
+            }
+
+            $pdo->prepare('INSERT INTO fichajes (empleado_id, tipo, fecha_hora) VALUES (:empleado_id, :tipo, :fecha_hora)')->execute([
+                ':empleado_id' => $empleadoId,
+                ':tipo' => $tipo,
+                ':fecha_hora' => $fechaHora,
+            ]);
+
+            respond(['success' => true, 'id' => (int)$pdo->lastInsertId()]);
+            break;
+
+        case 'edit_punch':
+            // Edita fichaje existente (admin)
+            requireLogin('admin');
+            $id = isset($input['id']) ? (int)$input['id'] : 0;
+            $tipo = isset($input['tipo']) ? trim($input['tipo']) : '';
+            $fechaHora = isset($input['fecha_hora']) ? trim($input['fecha_hora']) : '';
+
+            if (!$id || (!$tipo && !$fechaHora)) {
+                respond(['success' => false, 'error' => 'Datos insuficientes'], 400);
+            }
+            if ($tipo && !in_array($tipo, $validTypes, true)) {
+                respond(['success' => false, 'error' => 'Tipo invalido'], 400);
+            }
+
+            $fields = [];
+            $params = [':id' => $id];
+            if ($tipo) {
+                $fields[] = 'tipo = :tipo';
+                $params[':tipo'] = $tipo;
+            }
+            if ($fechaHora) {
+                $fields[] = 'fecha_hora = :fecha_hora';
+                $params[':fecha_hora'] = $fechaHora;
+            }
+
+            $sql = 'UPDATE fichajes SET ' . implode(', ', $fields) . ' WHERE id = :id';
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+
+            respond(['success' => true]);
+            break;
+
+        case 'delete_punch':
+            // Borra fichaje (admin)
+            requireLogin('admin');
+            $id = isset($input['id']) ? (int)$input['id'] : 0;
+            if (!$id) {
+                respond(['success' => false, 'error' => 'ID requerido'], 400);
+            }
+            $stmt = $pdo->prepare('DELETE FROM fichajes WHERE id = :id');
+            $stmt->execute([':id' => $id]);
+            respond(['success' => true]);
+            break;
+
+        default:
+            // Fichaje de empleado autenticado con validaciones de negocio
+            $user = requireLogin();
+
+            $tipo = isset($input['tipo']) ? trim($input['tipo']) : '';
+            $fechaHora = !empty($input['fecha_hora']) ? trim($input['fecha_hora']) : null;
+
+            $error = validatePunch($pdo, $user['id'], $tipo);
+            if ($error) {
+                respond(['success' => false, 'error' => $error], 400);
+            }
+
+            try {
+                $stmt = $pdo->prepare(
+                    'INSERT INTO fichajes (empleado_id, tipo, fecha_hora) VALUES (:empleado_id, :tipo, :fecha_hora)'
+                );
+                $stmt->execute([
+                    ':empleado_id' => $user['id'],
+                    ':tipo' => $tipo,
+                    ':fecha_hora' => $fechaHora ?: date('Y-m-d H:i:s'),
+                ]);
+
+                respond([
+                    'success' => true,
+                    'id' => (int)$pdo->lastInsertId(),
+                    'empleado_id' => $user['id'],
+                    'tipo' => $tipo,
+                    'fecha_hora' => $fechaHora ?: date('Y-m-d H:i:s'),
+                ]);
+            } catch (Throwable $e) {
+                respond(['success' => false, 'error' => 'No se pudo guardar el fichaje: ' . $e->getMessage()], 500);
+            }
+            break;
+    }
+}
+
+// --- GET routes ---
+if ($method === 'GET') {
+    switch ($action) {
+        case 'session':
+            // Devuelve la sesión activa si existe
+            $user = currentUser();
+            respond(['success' => true, 'user' => $user]);
+            break;
+
+        case 'stats':
+            // Dashboard admin: contadores y últimos fichajes
+            requireLogin('admin');
+
+            $today = date('Y-m-d');
+
+            $totalEmp = $pdo->query('SELECT COUNT(*) AS total FROM empleados')->fetchColumn();
+            $stmtToday = $pdo->prepare('SELECT COUNT(*) FROM fichajes WHERE DATE(fecha_hora) = :today');
+            $stmtToday->execute([':today' => $today]);
+            $totalFichajesHoy = (int)$stmtToday->fetchColumn();
+
+            $lastFichajes = $pdo->query(
+                'SELECT f.id, f.empleado_id, e.nombre AS empleado, e.rol, f.tipo, f.fecha_hora
+                 FROM fichajes f
+                 JOIN empleados e ON e.id = f.empleado_id
+                 ORDER BY f.fecha_hora DESC, f.id DESC
+                 LIMIT 20'
+            )->fetchAll();
+
+            $empleados = $pdo->query('SELECT id, nombre, cedula, rol FROM empleados ORDER BY nombre ASC')->fetchAll();
+
+            respond([
+                'success' => true,
+                'stats' => [
+                    'total_empleados' => (int)$totalEmp,
+                    'fichajes_hoy' => $totalFichajesHoy,
+                    'ultimos_fichajes' => $lastFichajes,
+                    'empleados' => $empleados,
+                ],
+            ]);
+            break;
+
+        default:
+            // Historial: del usuario o del empleado indicado por admin
+            $user = requireLogin();
+            $limit = isset($_GET['limit']) ? max(1, min(500, (int)$_GET['limit'])) : 200;
+
+            $empleadoId = $user['id'];
+            if ($user['rol'] === 'admin' && isset($_GET['empleado_id'])) {
+                $empleadoId = (int)$_GET['empleado_id'];
+            }
+
+            $sql = 'SELECT f.id, f.empleado_id, e.nombre AS empleado, f.tipo, f.fecha_hora
+                    FROM fichajes f
+                    JOIN empleados e ON e.id = f.empleado_id
+                    WHERE f.empleado_id = :empleado_id
+                    ORDER BY f.fecha_hora DESC, f.id DESC
+                    LIMIT :limit';
+            $stmt = $pdo->prepare($sql);
+            $stmt->bindValue(':empleado_id', $empleadoId, PDO::PARAM_INT);
+            $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
+            $stmt->execute();
+
+            respond([
+                'success' => true,
+                'data' => $stmt->fetchAll(),
+            ]);
+            break;
+    }
+}
+
+respond(['success' => false, 'error' => 'Metodo no permitido'], 405);
+
+// --- Helpers ---
 function respond($payload, $statusCode = 200)
 {
     http_response_code($statusCode);
@@ -175,259 +448,3 @@ function validatePunch(PDO $pdo, $empleadoId, $tipo)
 
     return null;
 }
-
-$method = $_SERVER['REQUEST_METHOD'];
-$action = isset($_GET['action']) ? trim($_GET['action']) : '';
-
-// --- POST routes ---
-if ($method === 'POST') {
-    $input = getJsonInput();
-    if (isset($input['action']) && $action === '') {
-        $action = trim($input['action']);
-    }
-
-    if ($action === 'login') {
-        $cedula = isset($input['cedula']) ? trim($input['cedula']) : '';
-        $password = isset($input['password']) ? (string)$input['password'] : '';
-
-        if ($cedula === '' || $password === '') {
-            respond(['success' => false, 'error' => 'Cedula y password son requeridos'], 400);
-        }
-
-        $stmt = $pdo->prepare('SELECT id, nombre, cedula, password, rol FROM empleados WHERE cedula = :cedula LIMIT 1');
-        $stmt->execute([':cedula' => $cedula]);
-        $user = $stmt->fetch();
-        if (!$user) {
-            respond(['success' => false, 'error' => 'Usuario o contraseña inválidos'], 401);
-        }
-
-        $needsRehash = false;
-        if (!verifyPassword($password, $user['password'], $needsRehash)) {
-            respond(['success' => false, 'error' => 'Usuario o contraseña inválidos'], 401);
-        }
-
-        if ($needsRehash) {
-            $newHash = password_hash($password, PASSWORD_DEFAULT);
-            $pdo->prepare('UPDATE empleados SET password = :pwd WHERE id = :id')->execute([
-                ':pwd' => $newHash,
-                ':id' => $user['id'],
-            ]);
-            $user['password'] = $newHash;
-        }
-
-        $_SESSION['user'] = [
-            'id' => (int)$user['id'],
-            'nombre' => $user['nombre'],
-            'cedula' => $user['cedula'],
-            'rol' => $user['rol'],
-        ];
-
-        respond(['success' => true, 'user' => $_SESSION['user']]);
-    }
-
-    if ($action === 'logout') {
-        session_unset();
-        session_destroy();
-        respond(['success' => true]);
-    }
-
-    if ($action === 'create_employee') {
-        requireLogin('admin');
-
-        $nombre = isset($input['nombre']) ? trim($input['nombre']) : '';
-        $cedula = isset($input['cedula']) ? trim($input['cedula']) : '';
-        $password = isset($input['password']) ? (string)$input['password'] : '';
-        $rol = isset($input['rol']) ? trim($input['rol']) : 'empleado';
-
-        if ($nombre === '' || $cedula === '' || $password === '') {
-            respond(['success' => false, 'error' => 'Nombre, cedula y password son requeridos'], 400);
-        }
-        if (!in_array($rol, ['admin', 'empleado'], true)) {
-            $rol = 'empleado';
-        }
-
-        $stmt = $pdo->prepare('SELECT id FROM empleados WHERE cedula = :cedula LIMIT 1');
-        $stmt->execute([':cedula' => $cedula]);
-        if ($stmt->fetch()) {
-            respond(['success' => false, 'error' => 'Cedula ya registrada'], 409);
-        }
-
-        $hash = password_hash($password, PASSWORD_DEFAULT);
-        $stmt = $pdo->prepare('INSERT INTO empleados (nombre, cedula, password, rol, turno_id) VALUES (:nombre, :cedula, :password, :rol, :turno_id)');
-        $stmt->execute([
-            ':nombre' => $nombre,
-            ':cedula' => $cedula,
-            ':password' => $hash,
-            ':rol' => $rol,
-            ':turno_id' => 1,
-        ]);
-
-        respond([
-            'success' => true,
-            'id' => (int)$pdo->lastInsertId(),
-            'nombre' => $nombre,
-            'cedula' => $cedula,
-            'rol' => $rol,
-        ], 201);
-    }
-
-    if ($action === 'admin_punch') {
-        requireLogin('admin');
-
-        $empleadoId = isset($input['empleado_id']) ? (int)$input['empleado_id'] : 0;
-        $tipo = isset($input['tipo']) ? trim($input['tipo']) : '';
-        $fechaHora = !empty($input['fecha_hora']) ? trim($input['fecha_hora']) : date('Y-m-d H:i:s');
-
-        if (!$empleadoId || !in_array($tipo, $validTypes, true)) {
-            respond(['success' => false, 'error' => 'Empleado y tipo son requeridos'], 400);
-        }
-
-        $pdo->prepare('INSERT INTO fichajes (empleado_id, tipo, fecha_hora) VALUES (:empleado_id, :tipo, :fecha_hora)')->execute([
-            ':empleado_id' => $empleadoId,
-            ':tipo' => $tipo,
-            ':fecha_hora' => $fechaHora,
-        ]);
-
-        respond(['success' => true, 'id' => (int)$pdo->lastInsertId()]);
-    }
-
-    if ($action === 'edit_punch') {
-        requireLogin('admin');
-        $id = isset($input['id']) ? (int)$input['id'] : 0;
-        $tipo = isset($input['tipo']) ? trim($input['tipo']) : '';
-        $fechaHora = isset($input['fecha_hora']) ? trim($input['fecha_hora']) : '';
-
-        if (!$id || (!$tipo && !$fechaHora)) {
-            respond(['success' => false, 'error' => 'Datos insuficientes'], 400);
-        }
-        if ($tipo && !in_array($tipo, $validTypes, true)) {
-            respond(['success' => false, 'error' => 'Tipo invalido'], 400);
-        }
-
-        $fields = [];
-        $params = [':id' => $id];
-        if ($tipo) {
-            $fields[] = 'tipo = :tipo';
-            $params[':tipo'] = $tipo;
-        }
-        if ($fechaHora) {
-            $fields[] = 'fecha_hora = :fecha_hora';
-            $params[':fecha_hora'] = $fechaHora;
-        }
-
-        $sql = 'UPDATE fichajes SET ' . implode(', ', $fields) . ' WHERE id = :id';
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute($params);
-
-        respond(['success' => true]);
-    }
-
-    if ($action === 'delete_punch') {
-        requireLogin('admin');
-        $id = isset($input['id']) ? (int)$input['id'] : 0;
-        if (!$id) {
-            respond(['success' => false, 'error' => 'ID requerido'], 400);
-        }
-        $stmt = $pdo->prepare('DELETE FROM fichajes WHERE id = :id');
-        $stmt->execute([':id' => $id]);
-        respond(['success' => true]);
-    }
-
-    // Default POST: employee/self punch with validation
-    $user = requireLogin();
-
-    $tipo = isset($input['tipo']) ? trim($input['tipo']) : '';
-    $fechaHora = !empty($input['fecha_hora']) ? trim($input['fecha_hora']) : null;
-
-    $error = validatePunch($pdo, $user['id'], $tipo);
-    if ($error) {
-        respond(['success' => false, 'error' => $error], 400);
-    }
-
-    try {
-        $stmt = $pdo->prepare(
-            'INSERT INTO fichajes (empleado_id, tipo, fecha_hora) VALUES (:empleado_id, :tipo, :fecha_hora)'
-        );
-        $stmt->execute([
-            ':empleado_id' => $user['id'],
-            ':tipo' => $tipo,
-            ':fecha_hora' => $fechaHora ?: date('Y-m-d H:i:s'),
-        ]);
-
-        respond([
-            'success' => true,
-            'id' => (int)$pdo->lastInsertId(),
-            'empleado_id' => $user['id'],
-            'tipo' => $tipo,
-            'fecha_hora' => $fechaHora ?: date('Y-m-d H:i:s'),
-        ]);
-    } catch (Throwable $e) {
-        respond(['success' => false, 'error' => 'No se pudo guardar el fichaje: ' . $e->getMessage()], 500);
-    }
-}
-
-// --- GET routes ---
-if ($method === 'GET') {
-    if ($action === 'session') {
-        $user = currentUser();
-        respond(['success' => true, 'user' => $user]);
-    }
-
-    if ($action === 'stats') {
-        requireLogin('admin');
-
-        $today = date('Y-m-d');
-
-        $totalEmp = $pdo->query('SELECT COUNT(*) AS total FROM empleados')->fetchColumn();
-        $stmtToday = $pdo->prepare('SELECT COUNT(*) FROM fichajes WHERE DATE(fecha_hora) = :today');
-        $stmtToday->execute([':today' => $today]);
-        $totalFichajesHoy = (int)$stmtToday->fetchColumn();
-
-        $lastFichajes = $pdo->query(
-            'SELECT f.id, f.empleado_id, e.nombre AS empleado, e.rol, f.tipo, f.fecha_hora
-             FROM fichajes f
-             JOIN empleados e ON e.id = f.empleado_id
-             ORDER BY f.fecha_hora DESC, f.id DESC
-             LIMIT 20'
-        )->fetchAll();
-
-        $empleados = $pdo->query('SELECT id, nombre, cedula, rol FROM empleados ORDER BY nombre ASC')->fetchAll();
-
-        respond([
-            'success' => true,
-            'stats' => [
-                'total_empleados' => (int)$totalEmp,
-                'fichajes_hoy' => $totalFichajesHoy,
-                'ultimos_fichajes' => $lastFichajes,
-                'empleados' => $empleados,
-            ],
-        ]);
-    }
-
-    // GET logs for current user or specific employee if admin
-    $user = requireLogin();
-    $limit = isset($_GET['limit']) ? max(1, min(500, (int)$_GET['limit'])) : 200;
-
-    $empleadoId = $user['id'];
-    if ($user['rol'] === 'admin' && isset($_GET['empleado_id'])) {
-        $empleadoId = (int)$_GET['empleado_id'];
-    }
-
-    $sql = 'SELECT f.id, f.empleado_id, e.nombre AS empleado, f.tipo, f.fecha_hora
-            FROM fichajes f
-            JOIN empleados e ON e.id = f.empleado_id
-            WHERE f.empleado_id = :empleado_id
-            ORDER BY f.fecha_hora DESC, f.id DESC
-            LIMIT :limit';
-    $stmt = $pdo->prepare($sql);
-    $stmt->bindValue(':empleado_id', $empleadoId, PDO::PARAM_INT);
-    $stmt->bindValue(':limit', $limit, PDO::PARAM_INT);
-    $stmt->execute();
-
-    respond([
-        'success' => true,
-        'data' => $stmt->fetchAll(),
-    ]);
-}
-
-respond(['success' => false, 'error' => 'Metodo no permitido'], 405);
