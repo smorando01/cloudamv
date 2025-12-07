@@ -775,16 +775,17 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
       function KioskFaceApp() {
         const videoRef = useRef(null);
         const streamRef = useRef(null);
-        const loopRef = useRef(null);
         const matcherRef = useRef(null);
         const employeeMapRef = useRef({});
+        const detectingRef = useRef(false);
+        const rafRef = useRef(null);
 
         const [status, setStatus] = useState("Cargando cerebro IA...");
-        const [ready, setReady] = useState(false);
         const [error, setError] = useState("");
         const [match, setMatch] = useState(null);
         const [busy, setBusy] = useState(false);
         const [lastAction, setLastAction] = useState("");
+        const [ready, setReady] = useState(false);
 
         useEffect(() => {
           let canceled = false;
@@ -793,20 +794,23 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
               setStatus("Cargando modelos...");
               await ensureFaceModelsLoaded();
               if (canceled) return;
+
               setStatus("Descargando rostros...");
               await loadEmployees();
               if (canceled) return;
+
               await startCamera();
               setStatus("Buscando rostros...");
               setReady(true);
-              loopRef.current = setInterval(runDetection, 800);
+              detectLoop();
             } catch (e) {
               setError("No se pudo iniciar el modo kiosco: " + e.message);
             }
           }
           start();
           return () => {
-            if (loopRef.current) clearInterval(loopRef.current);
+            if (rafRef.current) cancelAnimationFrame(rafRef.current);
+            detectingRef.current = false;
             if (streamRef.current) {
               streamRef.current.getTracks().forEach((t) => t.stop());
             }
@@ -839,19 +843,30 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             labeled.push(new faceapi.LabeledFaceDescriptors(String(emp.id), [descriptorArray]));
             map[String(emp.id)] = emp;
           });
-          if (labeled.length === 0) {
-            throw new Error("No hay rostros registrados. Guarda al menos un rostro desde el panel admin.");
-          }
-          matcherRef.current = new faceapi.FaceMatcher(labeled, 0.6);
+          matcherRef.current = labeled.length ? new faceapi.FaceMatcher(labeled, 0.6) : null;
           employeeMapRef.current = map;
         }
 
+        function detectLoop() {
+          if (!videoRef.current) return;
+          rafRef.current = requestAnimationFrame(async () => {
+            await runDetection();
+            detectLoop();
+          });
+        }
+
         async function runDetection() {
-          if (!ready || busy || !videoRef.current || !matcherRef.current) return;
+          if (!ready || busy) return;
+          const videoEl = videoRef.current;
+          if (!videoEl || videoEl.readyState !== 4) {
+            return;
+          }
+          if (detectingRef.current) return;
+          detectingRef.current = true;
           try {
             const detection = await faceapi
               .detectSingleFace(
-                videoRef.current,
+                videoEl,
                 new faceapi.SsdMobilenetv1Options({ minConfidence: 0.2, maxResults: 1 })
               )
               .withFaceLandmarks()
@@ -860,6 +875,14 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             if (!detection) {
               setStatus("Acércate a la cámara");
               setMatch(null);
+              detectingRef.current = false;
+              return;
+            }
+
+            if (!matcherRef.current) {
+              setStatus("Rostro detectado (sin registros)");
+              setMatch(null);
+              detectingRef.current = false;
               return;
             }
 
@@ -868,6 +891,7 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             if (!best || best.label === "unknown" || best.distance > THRESHOLD) {
               setStatus("Rostro desconocido");
               setMatch(null);
+              detectingRef.current = false;
               return;
             }
 
@@ -875,6 +899,7 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             if (!employee) {
               setStatus("Rostro desconocido");
               setMatch(null);
+              detectingRef.current = false;
               return;
             }
 
@@ -882,6 +907,8 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             setMatch({ employee, distance: best.distance });
           } catch (e) {
             setError("Error procesando rostro");
+          } finally {
+            detectingRef.current = false;
           }
         }
 
