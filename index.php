@@ -355,7 +355,7 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             const detection = await faceapi
               .detectSingleFace(
                 videoEl,
-                new faceapi.SsdMobilenetv1Options({ minConfidence: 0.2, maxResults: 1 })
+                new faceapi.SsdMobilenetv1Options({ minConfidence: 0.15, maxResults: 1 })
               )
               .withFaceLandmarks()
               .withFaceDescriptor();
@@ -373,7 +373,7 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             }
 
             if (!detection) {
-              setStatus("Acércate a la cámara");
+              setStatus("Sin detección. Acércate / ilumina.");
               setMatch(null);
               setLastDistance(null);
               return;
@@ -389,7 +389,7 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             const best = matcherRef.current.findBestMatch(detection.descriptor);
             const distance = best && best.distance !== undefined ? best.distance : null;
             setLastDistance(distance);
-            const THRESHOLD = 0.6;
+            const THRESHOLD = 0.7;
             if (!best || best.label === "unknown" || (distance !== null && distance > THRESHOLD)) {
               const diffText = distance !== null ? `Desconocido - Diff: ${distance.toFixed(2)}` : "Desconocido";
               setStatus(diffText);
