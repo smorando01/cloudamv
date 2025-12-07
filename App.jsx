@@ -756,7 +756,8 @@ function KioskFaceApp() {
   async function loadEmployees() {
     const res = await apiFetch("GET", "get_kiosk_data");
     if (!res || !res.success) {
-      throw new Error(res?.error || "No se pudieron obtener descriptores");
+      const errMsg = res && res.error ? res.error : "No se pudieron obtener descriptores";
+      throw new Error(errMsg);
     }
     const labeled = [];
     const map = {};
