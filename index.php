@@ -263,6 +263,129 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
         );
       }
 
+      // Modal para registrar rostro (admin)
+      function FaceCaptureModal({ employee, onClose, onSaved }) {
+        const videoRef = useRef(null);
+        const streamRef = useRef(null);
+        const loopRef = useRef(null);
+        const [status, setStatus] = useState("Preparando cámara...");
+        const [descriptor, setDescriptor] = useState(null);
+        const [savingFace, setSavingFace] = useState(false);
+        const [error, setError] = useState("");
+
+        useEffect(() => {
+          let canceled = false;
+          async function start() {
+            try {
+              setStatus("Cargando modelos...");
+              await ensureFaceModelsLoaded();
+              if (canceled) return;
+              setStatus("Solicitando cámara...");
+              const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" }, audio: false });
+              if (canceled) return;
+              streamRef.current = stream;
+              if (videoRef.current) {
+                videoRef.current.srcObject = stream;
+                await videoRef.current.play();
+              }
+              setStatus("Detectando rostro...");
+              loopRef.current = setInterval(detectFace, 800);
+            } catch (e) {
+              setError("No se pudo iniciar cámara o modelos");
+            }
+          }
+          start();
+          return () => {
+            if (loopRef.current) clearInterval(loopRef.current);
+            if (streamRef.current) {
+              streamRef.current.getTracks().forEach((t) => t.stop());
+            }
+          };
+        }, []);
+
+        async function detectFace() {
+          const v = videoRef.current;
+          if (!v || v.readyState !== 4 || typeof faceapi === "undefined") return;
+          try {
+            const detection = await faceapi
+              .detectSingleFace(v, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.15 }))
+              .withFaceLandmarks()
+              .withFaceDescriptor();
+            if (detection) {
+              setDescriptor(Array.from(detection.descriptor));
+              setStatus("Rostro listo para guardar.");
+            } else {
+              setStatus("Acerca tu rostro a la cámara...");
+              setDescriptor(null);
+            }
+          } catch (e) {
+            setError("Error detectando rostro");
+          }
+        }
+
+        async function handleSave() {
+          if (!descriptor) return;
+          setSavingFace(true);
+          const res = await apiFetch("POST", "save_face", { empleado_id: employee.id, descriptor });
+          if (res && res.success) {
+            onSaved();
+          } else {
+            setError(res.error || "No se pudo guardar");
+          }
+          setSavingFace(false);
+        }
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4">
+            <div className="w-full max-w-3xl rounded-2xl bg-white p-6 shadow-2xl">
+              <div className="flex items-start justify-between mb-4">
+                <div>
+                  <h3 className="text-xl font-semibold">Registrar rostro para {employee.nombre}</h3>
+                  <p className="text-sm text-slate-600">Usa la cámara frontal y espera la detección.</p>
+                </div>
+                <button onClick={onClose} className="text-slate-500 hover:text-slate-800">
+                  ✕
+                </button>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="relative overflow-hidden rounded-xl border border-slate-200 bg-slate-900">
+                  <video
+                    ref={videoRef}
+                    autoPlay
+                    muted
+                    playsInline
+                    className="h-full w-full object-cover"
+                    style={{ transform: "scaleX(-1)" }}
+                  />
+                </div>
+                <div className="space-y-3 text-sm">
+                  <p className="font-semibold text-brand-dark">Estado: {status}</p>
+                  {descriptor && <p className="rounded-lg bg-green-50 px-3 py-2 text-green-800">Rostro listo para guardar.</p>}
+                  {error && <p className="rounded-lg bg-brand-alert/10 px-3 py-2 text-brand-alert">{error}</p>}
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setDescriptor(null)}
+                      className="rounded-lg bg-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-300"
+                    >
+                      Reintentar
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!descriptor || savingFace}
+                      onClick={handleSave}
+                      className="rounded-lg bg-brand-primary px-4 py-2 text-sm font-semibold text-white shadow hover:bg-brand-primary-dark disabled:opacity-60"
+                    >
+                      {savingFace ? "Guardando..." : "Guardar rostro"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
       // --- COMPONENTE: MODO KIOSCO CON DEBUG VISUAL ---
       function KioskFaceApp() {
         const videoRef = useRef(null);
