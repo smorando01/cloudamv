@@ -242,7 +242,7 @@ function FaceCaptureModal({ employee, onClose, onSaved }) {
     if (!videoRef.current || typeof faceapi === "undefined") return;
     try {
       const detection = await faceapi
-        .detectSingleFace(videoRef.current, new faceapi.SsdMobilenetv1Options())
+        .detectSingleFace(videoRef.current, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.4 }))
         .withFaceLandmarks()
         .withFaceDescriptor();
       if (detection) {
@@ -790,7 +790,8 @@ function KioskFaceApp() {
       }
 
       const best = matcherRef.current.findBestMatch(detection.descriptor);
-      if (!best || best.label === "unknown" || best.distance > 0.45) {
+      const THRESHOLD = 0.6;
+      if (!best || best.label === "unknown" || best.distance > THRESHOLD) {
         setStatus("Rostro desconocido");
         setMatch(null);
         return;
