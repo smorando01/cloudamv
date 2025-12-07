@@ -777,8 +777,7 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
         const streamRef = useRef(null);
         const matcherRef = useRef(null);
         const employeeMapRef = useRef({});
-        const detectingRef = useRef(false);
-        const rafRef = useRef(null);
+        const intervalRef = useRef(null);
         const canvasRef = useRef(null);
 
         const [status, setStatus] = useState("Cargando cerebro IA...");
@@ -812,8 +811,7 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
           }
           start();
           return () => {
-            if (rafRef.current) cancelAnimationFrame(rafRef.current);
-            detectingRef.current = false;
+            if (intervalRef.current) clearInterval(intervalRef.current);
             if (streamRef.current) {
               streamRef.current.getTracks().forEach((t) => t.stop());
             }
@@ -852,22 +850,12 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
           setEmployeesReady(true);
         }
 
-        function detectLoop() {
-          if (!videoRef.current) return;
-          rafRef.current = requestAnimationFrame(async () => {
-            await runDetection();
-            detectLoop();
-          });
-        }
-
         async function runDetection() {
           if (!ready || busy) return;
           const videoEl = videoRef.current;
           if (!videoEl || videoEl.readyState !== 4) {
             return;
           }
-          if (detectingRef.current) return;
-          detectingRef.current = true;
           try {
             const detection = await faceapi
               .detectSingleFace(
@@ -885,7 +873,6 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
                 const ctx = canvas.getContext("2d");
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
               }
-              detectingRef.current = false;
               return;
             }
 
@@ -903,7 +890,6 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             if (!matcherRef.current) {
               setStatus("Rostro detectado (sin registros)");
               setMatch(null);
-              detectingRef.current = false;
               return;
             }
 
@@ -912,7 +898,6 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             if (!best || best.label === "unknown" || best.distance > THRESHOLD) {
               setStatus("Rostro desconocido");
               setMatch(null);
-              detectingRef.current = false;
               return;
             }
 
@@ -920,7 +905,6 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             if (!employee) {
               setStatus("Rostro desconocido");
               setMatch(null);
-              detectingRef.current = false;
               return;
             }
 
@@ -928,15 +912,17 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             setMatch({ employee, distance: best.distance });
           } catch (e) {
             setError("Error procesando rostro");
-          } finally {
-            detectingRef.current = false;
           }
         }
 
         useEffect(() => {
           if (modelsReady && employeesReady && cameraReady && !ready) {
             setReady(true);
-            detectLoop();
+            // Estrategia original: detección con intervalos fijos (500ms) usando FaceMatcher preconstruido
+            intervalRef.current = setInterval(runDetection, 500);
+          }
+          if (modelsReady && employeesReady && !matcherRef.current) {
+            setStatus("Rostro detectado (sin registros)");
           }
         }, [modelsReady, employeesReady, cameraReady, ready]);
 
