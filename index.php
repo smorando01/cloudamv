@@ -273,7 +273,10 @@
           if (!videoRef.current || typeof faceapi === "undefined") return;
           try {
             const detection = await faceapi
-              .detectSingleFace(videoRef.current, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.4 }))
+              .detectSingleFace(
+                videoRef.current,
+                new faceapi.SsdMobilenetv1Options({ minConfidence: 0.2, maxResults: 1 })
+              )
               .withFaceLandmarks()
               .withFaceDescriptor();
             if (detection) {
