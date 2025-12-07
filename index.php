@@ -393,7 +393,8 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
         const streamRef = useRef(null);
         const matcherRef = useRef(null);
         const employeeMapRef = useRef({});
-        const intervalRef = useRef(null);
+        const rafRef = useRef(null);
+        const detectingRef = useRef(false);
 
         const [status, setStatus] = useState("Cargando cerebro IA...");
         const [error, setError] = useState("");
@@ -427,7 +428,7 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
           }
           start();
           return () => {
-            if (intervalRef.current) clearInterval(intervalRef.current);
+            if (rafRef.current) cancelAnimationFrame(rafRef.current);
             if (streamRef.current) {
               streamRef.current.getTracks().forEach((t) => t.stop());
             }
@@ -463,17 +464,40 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
             labeled.push(new faceapi.LabeledFaceDescriptors(String(emp.id), [descriptor]));
             map[String(emp.id)] = emp;
           });
-          matcherRef.current = labeled.length ? new faceapi.FaceMatcher(labeled, 0.6) : null;
+          matcherRef.current = labeled.length ? new faceapi.FaceMatcher(labeled, 0.7) : null;
           employeeMapRef.current = map;
           setEmployeesReady(true);
         }
 
-        async function runDetection() {
-          if (!ready || busy) return;
+        const drawDetection = (detection, videoEl, canvas) => {
+          if (!canvas || !videoEl || !videoEl.videoWidth || !videoEl.videoHeight) return;
+          canvas.width = videoEl.videoWidth;
+          canvas.height = videoEl.videoHeight;
+          const ctx = canvas.getContext("2d");
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          if (detection) {
+            const displaySize = { width: videoEl.videoWidth, height: videoEl.videoHeight };
+            const resized = faceapi.resizeResults(detection, displaySize);
+            faceapi.draw.drawDetections(canvas, resized);
+          }
+        };
+
+        const detectLoop = useCallback(async () => {
+          if (!ready) {
+            rafRef.current = requestAnimationFrame(detectLoop);
+            return;
+          }
           const videoEl = videoRef.current;
           const canvas = canvasRef.current;
-          if (!videoEl || videoEl.readyState !== 4) return;
-
+          if (!videoEl || videoEl.readyState !== 4) {
+            rafRef.current = requestAnimationFrame(detectLoop);
+            return;
+          }
+          if (detectingRef.current) {
+            rafRef.current = requestAnimationFrame(detectLoop);
+            return;
+          }
+          detectingRef.current = true;
           try {
             const detection = await faceapi
               .detectSingleFace(
@@ -483,67 +507,59 @@ $kioskToken = getenv('KIOSK_TOKEN') ?: '';
               .withFaceLandmarks()
               .withFaceDescriptor();
 
-            if (canvas && videoEl.videoWidth && videoEl.videoHeight) {
-              canvas.width = videoEl.videoWidth;
-              canvas.height = videoEl.videoHeight;
-              const ctx = canvas.getContext("2d");
-              ctx.clearRect(0, 0, canvas.width, canvas.height);
-              if (detection) {
-                const displaySize = { width: videoEl.videoWidth, height: videoEl.videoHeight };
-                const resized = faceapi.resizeResults(detection, displaySize);
-                faceapi.draw.drawDetections(canvas, resized);
-              }
-            }
+            drawDetection(detection, videoEl, canvas);
 
             if (!detection) {
               setStatus("Sin detección. Acércate / ilumina.");
               setMatch(null);
               setLastDistance(null);
-              return;
-            }
-
-            if (!matcherRef.current) {
+            } else if (!matcherRef.current) {
               setStatus("Rostro detectado (sin registros)");
               setMatch(null);
               setLastDistance(null);
-              return;
+            } else {
+              const best = matcherRef.current.findBestMatch(detection.descriptor);
+              const distance = best && best.distance !== undefined ? best.distance : null;
+              setLastDistance(distance);
+              const THRESHOLD = 0.7;
+              if (!best || best.label === "unknown" || (distance !== null && distance > THRESHOLD)) {
+                const diffText = distance !== null ? `Desconocido - Diff: ${distance.toFixed(2)}` : "Desconocido";
+                setStatus(diffText);
+                setMatch(null);
+              } else {
+                const employee = employeeMapRef.current[best.label];
+                if (employee) {
+                  setStatus(`Hola, ${employee.nombre}`);
+                  setMatch({ employee, distance });
+                } else {
+                  const diffText = distance !== null ? `Desconocido - Diff: ${distance.toFixed(2)}` : "Desconocido";
+                  setStatus(diffText);
+                  setMatch(null);
+                }
+              }
             }
-
-            const best = matcherRef.current.findBestMatch(detection.descriptor);
-            const distance = best && best.distance !== undefined ? best.distance : null;
-            setLastDistance(distance);
-            const THRESHOLD = 0.7;
-            if (!best || best.label === "unknown" || (distance !== null && distance > THRESHOLD)) {
-              const diffText = distance !== null ? `Desconocido - Diff: ${distance.toFixed(2)}` : "Desconocido";
-              setStatus(diffText);
-              setMatch(null);
-              return;
-            }
-
-            const employee = employeeMapRef.current[best.label];
-            if (!employee) {
-              const diffText = distance !== null ? `Desconocido - Diff: ${distance.toFixed(2)}` : "Desconocido";
-              setStatus(diffText);
-              setMatch(null);
-              return;
-            }
-
-            setStatus(`Hola, ${employee.nombre}`);
-            setMatch({ employee, distance });
           } catch (e) {
             setError("Error procesando rostro");
+          } finally {
+            detectingRef.current = false;
+            rafRef.current = requestAnimationFrame(detectLoop);
           }
-        }
+        }, [ready]);
 
         useEffect(() => {
           if (modelsReady && employeesReady && cameraReady && !ready) {
             setReady(true);
-            intervalRef.current = setInterval(runDetection, 500);
           }
           if (modelsReady && employeesReady && !matcherRef.current) {
             setStatus("Rostro detectado (sin registros)");
           }
         }, [modelsReady, employeesReady, cameraReady, ready]);
+
+        useEffect(() => {
+          if (ready && !rafRef.current) {
+            rafRef.current = requestAnimationFrame(detectLoop);
+          }
+        }, [ready, detectLoop]);
 
         async function handlePunch(tipo) {
           if (!match || busy) return;
